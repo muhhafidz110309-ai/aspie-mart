@@ -9,7 +9,7 @@
 * Admin Sebagai Yang Mengatur Segalanya Seperti Menambah/Menghapus Produk, Melihat data data pelanggan DLL
 
 #FYI
-*Saya tidak menggunakan github untuk deploy ke vercel tapi saya menggunakan deploy melalui terminal
+Saya tidak menggunakan github untuk deploy ke vercel tapi saya menggunakan deploy melalui terminal
 Contoh:
 * C:\User\Thinkpad T14\Downloads\aspiemart-vercel>vercel --prod
 
