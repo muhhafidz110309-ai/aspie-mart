@@ -77,8 +77,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $updStok = $pdo->prepare("UPDATE produk SET stok = stok - ? WHERE id = ?");
             foreach ($cart as $item) $updStok->execute([(int)$item['qty'], (int)$item['id']]);
 
-            // Simpan hutang dengan transaksi_id
-            $insHutang = $pdo->prepare("INSERT INTO hutang (transaksi_id, nama, produk_id, qty, harga, dibayar, sisa, keterangan, tanggal) VALUES (?,?,?,?,?,?,?,?,CURDATE())");
+            // Simpan hutang dengan transaksi_id (Menggunakan CURRENT_DATE untuk PostgreSQL)
+            $insHutang = $pdo->prepare("INSERT INTO hutang (transaksi_id, nama, produk_id, qty, harga, dibayar, sisa, keterangan, tanggal) VALUES (?,?,?,?,?,?,?,?,CURRENT_DATE)");
             $ketHutang = ($keterangan ? $keterangan . ' | ' : '') . 'DP total: ' . rupiah($bayarSekarang);
             foreach ($cart as $item) {
                 $pid = (int)$item['id']; $qty = (int)$item['qty']; $harga = (float)$produkDb[$pid]['harga_jual'];
@@ -535,4 +535,4 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 
-<?php require_once '../includes/footer.php'; ?> 
+<?php require_once '../includes/footer.php'; ?>

@@ -8,6 +8,13 @@ $hutangInfo = $_SESSION['hutang_info'] ?? null;
 
 $isHutang = ($modeStruk === 'hutang' && $hutangInfo);
 
+// ============================================================
+// CEK ROLE USER (ADMIN vs USER BIASA)
+// Sesuaikan 'role' dengan nama kolom di tabel users Anda
+// ============================================================
+$roleUser = strtolower((string)(user()['role'] ?? 'user'));
+$isAdmin  = in_array($roleUser, ['admin', 'administrator', 'owner'], true);
+
 if ($isHutang) {
     /* ===== MODE STRUK HUTANG ===== */
     unset($_SESSION['hutang_info']);
@@ -711,9 +718,11 @@ require_once 'includes/header.php';
       ➕ Transaksi Baru
     </a>
 
+    <?php if ($isAdmin): ?>
     <a href="transaksi.php" class="btn btn-outline">
       📋 Daftar Transaksi
     </a>
+    <?php endif; ?>
 
     <?php if ($isHutang): ?>
     <a href="hutang.php" class="btn btn-outline">
