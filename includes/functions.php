@@ -81,7 +81,7 @@ function tanggalIndo($datetime) {
 function produkImage($gambar) {
     $gambar = trim((string)$gambar);
     if ($gambar !== '') {
-        // Jika URL penuh (Vercel Blob)
+        // Jika URL penuh (Supabase / Link luar)
         if (preg_match('#^https?://#i', $gambar)) {
             return $gambar;
         }
@@ -93,53 +93,11 @@ function produkImage($gambar) {
     return 'data:image/svg+xml;utf8,' . rawurlencode($svg);
 }
 
-/* Upload ke Vercel Blob */
-function blobUpload($tmpPath, $namaFile, $mime) {
-    $token = getenv('BLOB_READ_WRITE_TOKEN');
-    if (!$token) return null;
-
-    $ch = curl_init('https://blob.vercel-storage.com/produk/' . rawurlencode($namaFile));
-    curl_setopt_array($ch, [
-        CURLOPT_CUSTOMREQUEST  => 'PUT',
-        CURLOPT_POSTFIELDS     => file_get_contents($tmpPath),
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 30,
-        CURLOPT_HTTPHEADER     => [
-            'Authorization: Bearer ' . $token,
-            'x-api-version: 7',
-            'x-add-random-suffix: 0',
-            'x-content-type: ' . $mime,
-        ],
-    ]);
-    $res  = curl_exec($ch);
-    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($res === false || $code < 200 || $code >= 300) return null;
-    $j = json_decode($res, true);
-    return $j['url'] ?? null;
-}
-
-function blobDelete($url) {
-    $token = getenv('BLOB_READ_WRITE_TOKEN');
-    if (!$token || !preg_match('#^https?://#i', (string)$url)) return;
-
-    $ch = curl_init('https://blob.vercel-storage.com/delete');
-    curl_setopt_array($ch, [
-        CURLOPT_POST           => true,
-        CURLOPT_POSTFIELDS     => json_encode(['urls' => [$url]]),
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => 15,
-        CURLOPT_HTTPHEADER     => [
-            'Authorization: Bearer ' . $token,
-            'x-api-version: 7',
-            'Content-Type: application/json',
-        ],
-    ]);
-    curl_exec($ch);
-    curl_close($ch);
-}
-
+/* CATATAN: 
+   Fungsi uploadGambar & hapusGambar di bawah ini hanya digunakan 
+   jika ada file lain yang memanggilnya. 
+   Untuk Supabase, upload utama sudah ditangani langsung di admin/produk.php 
+*/
 function uploadGambar($file, $oldFile = null) {
     if (empty($file) || empty($file['name']) || ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
         return $oldFile;
@@ -153,24 +111,8 @@ function uploadGambar($file, $oldFile = null) {
     }
 
     $namaBaru = 'prd_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-
-    // Cek environment Vercel
-    $isVercel = getenv('VERCEL') || getenv('BLOB_READ_WRITE_TOKEN');
-
-    if ($isVercel) {
-        // Simpan ke Vercel Blob
-        $mimes = ['jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'png' => 'image/png', 'gif' => 'image/gif', 'webp' => 'image/webp'];
-        $url = blobUpload($file['tmp_name'], $namaBaru, $mimes[$ext]);
-        
-        if ($url) {
-            if ($oldFile) blobDelete($oldFile);
-            return $url;
-        }
-        return $oldFile;
-    } 
-    
-    // Simpan ke folder lokal public/uploads/produk
     $dir = __DIR__ . '/../public/uploads/produk/';
+    
     if (!is_dir($dir)) {
         mkdir($dir, 0775, true);
     }
@@ -188,13 +130,9 @@ function uploadGambar($file, $oldFile = null) {
 function hapusGambar($gambar) {
     if (empty($gambar)) return;
 
+    // Jika URL (Supabase), biarkan, hapus file ditangani di produk.php
     if (preg_match('#^https?://#i', $gambar)) {
-        blobDelete($gambar);
         return;
-    }
-
-    if (getenv('VERCEL') || getenv('BLOB_READ_WRITE_TOKEN')) {
-        return; // Abaikan hapus lokal di Vercel
     }
 
     $file = __DIR__ . '/../public/uploads/produk/' . $gambar;

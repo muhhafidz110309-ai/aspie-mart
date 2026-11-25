@@ -4,52 +4,144 @@ require_once '../config/database.php';
 requireLogin();
 
 /* ============================================================
-   HELPER GAMBAR: UPLOAD FILE (BASE64) ATAU LINK URL
+   KONFIGURASI SUPABASE STORAGE
    ============================================================ */
-function parseUploadGambarBase64(array $file): ?string
+const SUPABASE_BUCKET = 'produk';
+
+function supabaseEnv(string $name): string
 {
-    if (($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+    $v = getenv($name);
+    if ($v === false || $v === '') {
+        $v = $_ENV[$name] ?? $_SERVER[$name] ?? '';
+    }
+    return trim((string)$v);
+}
+
+function supabaseHeaders(string $key, array $extra = []): array
+{
+    $headers = ["apikey: {$key}"];
+    if (strpos($key, 'eyJ') === 0) {
+        $headers[] = "Authorization: Bearer {$key}";
+    }
+    return array_merge($headers, $extra);
+}
+
+/* ============================================================
+   HELPER GAMBAR: UPLOAD KE SUPABASE STORAGE
+   ============================================================ */
+function uploadKeSupabaseStorage(array $file): ?string
+{
+    $err = $file['error'] ?? UPLOAD_ERR_NO_FILE;
+    if ($err === UPLOAD_ERR_NO_FILE) {
         return null;
     }
-
-    if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK || empty($file['tmp_name'])) {
-        return null;
+    if ($err !== UPLOAD_ERR_OK || empty($file['tmp_name'])) {
+        throw new RuntimeException('Upload gambar gagal (kode error ' . (int)$err . ').');
     }
 
     if (($file['size'] ?? 0) > 1 * 1024 * 1024) {
-        return null;
+        throw new RuntimeException('Ukuran gambar maksimal 1MB.');
     }
 
     $mime = mime_content_type($file['tmp_name']) ?: '';
-    $allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-    if (!in_array($mime, $allowed, true)) {
-        return null;
+    $allowed = [
+        'image/jpeg' => 'jpg',
+        'image/png'  => 'png',
+        'image/webp' => 'webp',
+        'image/gif'  => 'gif',
+    ];
+    if (!isset($allowed[$mime])) {
+        throw new RuntimeException('Tipe file tidak didukung. Gunakan JPG, PNG, GIF, atau WEBP.');
     }
 
-    $raw = file_get_contents($file['tmp_name']);
-    if ($raw === false) {
-        return null;
+    $supabaseUrl = rtrim(supabaseEnv('SUPABASE_URL'), '/');
+    $supabaseKey = supabaseEnv('SUPABASE_KEY');
+    if ($supabaseUrl === '' || $supabaseKey === '') {
+        throw new RuntimeException('Konfigurasi SUPABASE_URL / SUPABASE_KEY belum terbaca. Cek Environment Variables Vercel lalu redeploy.');
     }
 
-    return 'data:' . $mime . ';base64,' . base64_encode($raw);
+    $fileData = file_get_contents($file['tmp_name']);
+    if ($fileData === false) {
+        throw new RuntimeException('Gagal membaca file upload.');
+    }
+
+    $fileName = 'prd_' . date('YmdHis') . '_' . bin2hex(random_bytes(4)) . '.' . $allowed[$mime];
+    $endpoint = $supabaseUrl . '/storage/v1/object/' . SUPABASE_BUCKET . '/' . $fileName;
+
+    $ch = curl_init($endpoint);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $fileData,
+        CURLOPT_TIMEOUT        => 30,
+        CURLOPT_HTTPHEADER     => supabaseHeaders($supabaseKey, [
+            "Content-Type: {$mime}",
+            "x-upsert: true",
+        ]),
+    ]);
+
+    $response = curl_exec($ch);
+    $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr  = curl_error($ch);
+    // curl_close($ch); // <--- DIHAPUS: Deprecated di PHP 8.5
+
+    if ($response === false) {
+        throw new RuntimeException('Tidak bisa terhubung ke Supabase Storage: ' . $curlErr);
+    }
+
+    if ($httpCode < 200 || $httpCode >= 300) {
+        $detail = json_decode((string)$response, true);
+        $msg = is_array($detail) ? ($detail['message'] ?? $detail['error'] ?? '') : '';
+        throw new RuntimeException('Supabase menolak upload (HTTP ' . $httpCode . ')' . ($msg ? ': ' . $msg : '.'));
+    }
+
+    return $supabaseUrl . '/storage/v1/object/public/' . SUPABASE_BUCKET . '/' . $fileName;
+}
+
+/* ============================================================
+   HELPER GAMBAR: HAPUS FILE LAMA DARI SUPABASE STORAGE
+   ============================================================ */
+function hapusGambarSupabase(PDO $pdo, ?string $url, int $excludeId = 0): void
+{
+    $url = trim((string)$url);
+    if ($url === '') return;
+
+    $supabaseUrl = rtrim(supabaseEnv('SUPABASE_URL'), '/');
+    $supabaseKey = supabaseEnv('SUPABASE_KEY');
+    if ($supabaseUrl === '' || $supabaseKey === '') return;
+
+    $prefix = $supabaseUrl . '/storage/v1/object/public/' . SUPABASE_BUCKET . '/';
+    if (strpos($url, $prefix) !== 0) return; 
+
+    $fileName = substr($url, strlen($prefix));
+    if ($fileName === '' || strpos($fileName, '/') !== false) return;
+
+    try {
+        $cek = $pdo->prepare("SELECT COUNT(*) FROM produk WHERE gambar = ? AND id <> ?");
+        $cek->execute([$url, $excludeId]);
+        if ((int)$cek->fetchColumn() > 0) return;
+    } catch (Exception $e) {
+        return;
+    }
+
+    $ch = curl_init($supabaseUrl . '/storage/v1/object/' . SUPABASE_BUCKET . '/' . rawurlencode($fileName));
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CUSTOMREQUEST  => 'DELETE',
+        CURLOPT_TIMEOUT        => 15,
+        CURLOPT_HTTPHEADER     => supabaseHeaders($supabaseKey),
+    ]);
+    curl_exec($ch);
+    // curl_close($ch); // <--- DIHAPUS: Deprecated di PHP 8.5
 }
 
 function normalisasiLinkGambar(?string $url): ?string
 {
     $clean = trim((string)$url);
-    if ($clean === '') {
-        return null;
-    }
-
-    if (!filter_var($clean, FILTER_VALIDATE_URL)) {
-        return null;
-    }
-
+    if ($clean === '') return null;
+    if (!filter_var($clean, FILTER_VALIDATE_URL)) return null;
     $scheme = strtolower((string)parse_url($clean, PHP_URL_SCHEME));
-    if (!in_array($scheme, ['http', 'https'], true)) {
-        return null;
-    }
-
+    if (!in_array($scheme, ['http', 'https'], true)) return null;
     return $clean;
 }
 
@@ -61,7 +153,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
     $nama          = trim($_POST['nama'] ?? '');
     $kategori      = trim($_POST['kategori'] ?? '');
 
-    // Bersihkan format titik dari harga
     $hargaBeli_raw = $_POST['harga_beli'] ?? '0';
     $hargaJual_raw = $_POST['harga_jual'] ?? '0';
     $hargaBeli     = (float)str_replace('.', '', $hargaBeli_raw);
@@ -71,18 +162,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
     $satuan        = trim($_POST['satuan'] ?? 'pcs');
     $satuanBeli    = trim($_POST['satuan_beli'] ?? 'pcs');
 
-    // Isi per satuan: Jika kosong atau 0, otomatis jadi 1
     $isiPerSatuan  = (int)($_POST['isi_per_satuan'] ?? 1);
     if ($isiPerSatuan < 1) $isiPerSatuan = 1;
 
     $deskripsi     = trim($_POST['deskripsi'] ?? '');
-    $gambarLama    = trim($_POST['gambar_lama'] ?? '') ?: null;
     $gambarInput   = trim($_POST['gambar_url'] ?? '');
 
-    // Harga beli per pcs (untuk validasi margin)
+    $gambarLama = null;
+    if ($id > 0) {
+        $stmtLama = $pdo->prepare("SELECT gambar FROM produk WHERE id = ?");
+        $stmtLama->execute([$id]);
+        $gambarLama = $stmtLama->fetchColumn() ?: null;
+    }
+
     $hargaBeliPcs = $hargaBeli / $isiPerSatuan;
 
-    // Validasi
     if ($nama === '') {
         flash('error', 'Nama produk wajib diisi.');
         redirect('produk.php' . ($id ? '?edit=' . $id : ''));
@@ -96,9 +190,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
         redirect('produk.php' . ($id ? '?edit=' . $id : ''));
     }
 
-    // Prioritas: 1. File upload baru -> 2. Link URL baru -> 3. Gambar lama
-    $gambarDariFile = parseUploadGambarBase64($_FILES['gambar'] ?? []);
-    $gambarDariUrl  = null;
+    try {
+        $gambarDariFile = uploadKeSupabaseStorage($_FILES['gambar'] ?? []);
+    } catch (RuntimeException $e) {
+        flash('error', $e->getMessage());
+        redirect('produk.php' . ($id ? '?edit=' . $id : ''));
+    }
+    $gambarDariUrl = null;
 
     if ($gambarDariFile === null && $gambarInput !== '') {
         $gambarDariUrl = normalisasiLinkGambar($gambarInput);
@@ -110,14 +208,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
 
     $gambar = $gambarDariFile ?? $gambarDariUrl ?? $gambarLama;
 
-    // Handle hapus gambar via tombol
-    if (($_POST['hapus_gambar'] ?? '0') === '1') {
+    if (($_POST['hapus_gambar'] ?? '0') === '1' && $gambarDariFile === null && $gambarDariUrl === null) {
         $gambar = null;
     }
 
     try {
         if ($id > 0) {
-            // === UPDATE ===
             $stmt = $pdo->prepare("UPDATE produk
                                    SET nama=?, kategori=?, harga_beli=?, harga_jual=?,
                                        stok=?, satuan=?, satuan_beli=?, isi_per_satuan=?,
@@ -128,9 +224,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
                 $stok, $satuan, $satuanBeli, $isiPerSatuan,
                 $gambar, $deskripsi, $id
             ]);
+
+            if ($gambarLama && $gambarLama !== $gambar) {
+                hapusGambarSupabase($pdo, $gambarLama, $id);
+            }
+
             flash('success', 'Produk "' . $nama . '" berhasil diperbarui.');
         } else {
-            // === INSERT ===
             $kode = 'PRD' . str_pad((string)random_int(1, 9999), 4, '0', STR_PAD_LEFT);
             while ((int)$pdo->query("SELECT COUNT(*) FROM produk WHERE kode='" . $kode . "'")->fetchColumn() > 0) {
                 $kode = 'PRD' . str_pad((string)random_int(1, 9999), 4, '0', STR_PAD_LEFT);
@@ -146,6 +246,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
             flash('success', 'Produk baru "' . $nama . '" berhasil ditambahkan.');
         }
     } catch (PDOException $e) {
+        if ($gambarDariFile) {
+            hapusGambarSupabase($pdo, $gambarDariFile, $id);
+        }
         flash('error', 'Gagal menyimpan produk: ' . $e->getMessage());
     }
     redirect('produk.php');
@@ -158,19 +261,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'delete')
     $id = (int)($_POST['id'] ?? 0);
     if ($id <= 0) redirect('produk.php');
 
+    $gambarHapus = null;
+
     try {
         $pdo->beginTransaction();
 
-        $stmt = $pdo->prepare("SELECT nama FROM produk WHERE id = ?");
+        $stmt = $pdo->prepare("SELECT nama, gambar FROM produk WHERE id = ?");
         $stmt->execute([$id]);
         $p = $stmt->fetch();
 
         if ($p) {
             $pdo->prepare("DELETE FROM produk WHERE id = ?")->execute([$id]);
+            $gambarHapus = $p['gambar'] ?? null;
             flash('success', 'Produk "' . $p['nama'] . '" berhasil dihapus.');
         }
 
         $pdo->commit();
+
+        if ($gambarHapus) {
+            hapusGambarSupabase($pdo, $gambarHapus, $id);
+        }
     } catch (Exception $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
         flash('error', 'Gagal menghapus: ' . $e->getMessage());
@@ -183,9 +293,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'delete')
    ============================================================ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'delete_all') {
     try {
+        $semuaGambar = $pdo->query("SELECT DISTINCT gambar FROM produk WHERE gambar IS NOT NULL AND gambar <> ''")
+                           ->fetchAll(PDO::FETCH_COLUMN);
+
         $pdo->beginTransaction();
         $pdo->exec("DELETE FROM produk");
         $pdo->commit();
+
+        foreach ($semuaGambar as $g) {
+            hapusGambarSupabase($pdo, $g, 0);
+        }
+
         flash('success', 'Semua produk berhasil dihapus permanen.');
     } catch (Exception $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
@@ -360,14 +478,12 @@ require_once '../includes/header.php';
         <input type="hidden" name="id" value="<?= (int)($edit['id'] ?? 0) ?>">
         <input type="hidden" name="gambar_lama" value="<?= e($edit['gambar'] ?? '') ?>">
 
-        <!-- NAMA PRODUK -->
         <div class="form-group" style="margin-bottom:12px">
           <label>Nama Produk <span class="req">*</span></label>
           <input type="text" name="nama" value="<?= e($edit['nama'] ?? '') ?>"
                  placeholder="Contoh: Oasis 600ml" required autofocus>
         </div>
 
-        <!-- KATEGORI -->
         <div class="form-group" style="margin-bottom:12px">
           <label>Kategori</label>
           <input type="hidden" name="kategori" id="kategoriInput" value="<?= e($kategoriTerpilih) ?>">
@@ -397,7 +513,6 @@ require_once '../includes/header.php';
           </div>
         </div>
 
-        <!-- HARGA JUAL -->
         <div class="form-group" style="margin-bottom:12px">
           <label>
             Harga Jual (per pcs) <span class="req">*</span>
@@ -408,7 +523,6 @@ require_once '../includes/header.php';
                  inputmode="numeric" required placeholder="2.000" autocomplete="off">
         </div>
 
-        <!-- STOK & SATUAN JUAL -->
         <div class="form-grid" style="grid-template-columns:1fr 1fr;margin-bottom:12px">
           <div class="form-group">
             <label>Stok (dalam pcs)</label>
@@ -420,7 +534,6 @@ require_once '../includes/header.php';
           </div>
         </div>
 
-        <!-- FIELD DETAIL -->
         <div class="form-group detail-only" style="margin-bottom:6px">
           <label>
             Harga Beli (per satuan beli)
@@ -460,7 +573,6 @@ require_once '../includes/header.php';
           </span>
         </div>
 
-        <!-- UPLOAD GAMBAR ATAU TAUTKAN LINK -->
         <div class="form-group" style="margin-bottom:12px; margin-top:12px;">
           <label>Gambar Produk (Upload atau Link)</label>
           <div class="upload-area" id="uploadArea">
@@ -498,7 +610,6 @@ require_once '../includes/header.php';
           <textarea name="deskripsi" placeholder="Opsional..."><?= e($edit['deskripsi'] ?? '') ?></textarea>
         </div>
 
-        <!-- FORM ACTIONS + TOMBOL MODE DETAIL -->
         <div class="form-actions" style="margin-top: 16px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
           <button class="btn btn-primary" type="submit">
             <?= $edit ? 'Perbarui Produk' : 'Simpan Produk' ?>
@@ -532,7 +643,6 @@ require_once '../includes/header.php';
       </div>
     </div>
 
-    <!-- SEARCH BAR -->
     <div class="search-wrap">
       <form method="get" action="produk.php" id="searchForm" class="search-form">
         <?php if ($kategori_filter): ?>
@@ -558,7 +668,6 @@ require_once '../includes/header.php';
       </form>
     </div>
 
-    <!-- QUICK FILTER KATEGORI + COUNT -->
     <div class="filter-bar">
       <a href="produk.php?<?= $search_filter ? 'q=' . urlencode($search_filter) : '' ?>"
          class="btn btn-sm btn-filter <?= $kategori_filter === '' ? 'btn-primary' : 'btn-outline' ?>">
@@ -605,7 +714,7 @@ require_once '../includes/header.php';
           <tr>
             <td>
               <div class="thumb-wrap">
-                <img src="<?= e(produkImage($p['gambar'])) ?>" alt="<?= e($p['nama']) ?>" class="thumb">
+                <img src="<?= e(produkImage($p['gambar'])) ?>" alt="<?= e($p['nama']) ?>" class="thumb" loading="lazy">
                 <div>
                   <div class="strong"><?= e($p['nama']) ?></div>
                   <small class="text-muted">
