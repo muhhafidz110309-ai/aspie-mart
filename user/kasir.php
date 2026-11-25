@@ -35,9 +35,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($mode === 'qris') $bayar = $total;
         if ($mode === 'tunai' && $bayar < $total) throw new Exception('Nominal pembayaran kurang dari total tagihan.');
 
-        // Cek ketersediaan kolom metode_pembayaran
+        // ============================================================
+        // CEK KOLOM metode_pembayaran (KOMPATIBEL POSTGRESQL & MYSQL)
+        // ============================================================
         $hasMetodeCol = false;
-        try { $cols = $pdo->query("SHOW COLUMNS FROM transaksi LIKE 'metode_pembayaran'")->fetchAll(); $hasMetodeCol = !empty($cols); } catch (Exception $e) {}
+        try {
+            $stmtCol = $pdo->prepare("SELECT column_name FROM information_schema.columns WHERE table_name = 'transaksi' AND column_name = 'metode_pembayaran'");
+            $stmtCol->execute();
+            $hasMetodeCol = !empty($stmtCol->fetchAll());
+        } catch (Exception $e) {
+            // Jika gagal cek, anggap tidak ada kolom
+            $hasMetodeCol = false;
+        }
 
         if ($mode === 'hutang') {
             $bayarSekarang = max(0, min($bayar, $total));
@@ -526,4 +535,4 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 
-<?php require_once '../includes/footer.php'; ?>
+<?php require_once '../includes/footer.php'; ?> 
