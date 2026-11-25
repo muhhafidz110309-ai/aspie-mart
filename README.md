@@ -1,6 +1,6 @@
 #INFO AJA
 * Menggunakan Hosting Vercel 
-* Menggunakan Database Supabase (PostgresSQL) 
+* Menggunakan Database Supabase (PostgresSQL) Dan Menggunakan Bucket untuk menyimpan gambar seperti setekah menambah produk atau edit produk
 * Menggunakan Bahasa PHP Native
 
 #FITUR WEB
